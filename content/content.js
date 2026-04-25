@@ -33,6 +33,9 @@
       '.scaffold-layout__detail h1',
       'main h1',
       'h1',
+      // Direct /jobs/view/ pages use a <p> instead of <h1> (hashed classes)
+      // We match them via the primary-description container sibling structure
+      // — handled in scrapeJobData() via direct-view title extraction
     ],
     company: [
       '.job-details-jobs-unified-top-card__company-name a',
@@ -41,9 +44,9 @@
       '.jobs-unified-top-card__company-name',
       '.topcard__org-name-link',
       '[data-test-company-name]',
-      // Note: bare a[href*="/company/"] is intentionally omitted here —
-      // it's too broad (would match nav/sidebar). The h1-proximity walk
-      // in scrapeJobData() handles the hashed-class full-tab layout instead.
+      // Direct /jobs/view/ page: company is an <a href*="/company/"> inside
+      // the top-card area. Scope to main to avoid nav/sidebar matches.
+      'main a[href*="/company/"]',
     ],
     location: [
       '.job-details-jobs-unified-top-card__primary-description-container .tvm__text:first-child',
@@ -194,6 +197,13 @@
 
   // ── Scrape job data from the current page ────────────────────
   function scrapeJobData() {
+    const isDirectView = window.location.href.includes('/jobs/view/');
+
+    // On direct /jobs/view/ pages:
+    // - Title: comes from h1 selectors or document.title fallback below
+    // - Company: 'main a[href*="/company/"]' in SEL.company handles it
+    // - Location: [class*="primary-description"] fallback below handles it
+
     let title        = cleanText($first(SEL.jobTitle));
     let company      = cleanText($first(SEL.company));
     const locationEl   = $first(SEL.location);
@@ -314,7 +324,39 @@
       location = locationFromSubtitle;
       console.log('[JobTracker] Used subtitle proximity fallback for location:', location);
     }
-    
+
+    // ── Direct /jobs/view/ fallback: extract location from primary-description ──
+    // On direct view pages the location appears as the first segment of:
+    // "Hamburg, Hamburg, Germany · 1 day ago · 17 people clicked apply"
+    // inside a container whose class contains "primary-description".
+    if (!location && isDirectView) {
+      const primaryDesc = document.querySelector('[class*="primary-description"]');
+      if (primaryDesc) {
+        const rawText = primaryDesc.innerText?.trim() || '';
+        if (rawText) {
+          // Split on '·' — first part is the location
+          const parts = rawText.split('·').map(p => p.trim()).filter(p => p);
+          if (parts.length >= 1) {
+            const possLoc = parts[0];
+            const pl = possLoc.toLowerCase();
+            // Make sure it's not a workplace-type-only string
+            if (!['remote', 'hybrid', 'on-site', 'onsite'].includes(pl) &&
+                !pl.includes('applicant') && !pl.includes('follower')) {
+              location = possLoc;
+              console.log('[JobTracker] Direct-view location from primary-description:', location);
+            }
+          }
+          // Also check parts for workplace type
+          for (let i = 1; i < parts.length && !workplaceType; i++) {
+            const pt = parts[i].toLowerCase().replace(/[()]/g, '').trim();
+            if (['remote', 'hybrid', 'on-site', 'onsite'].includes(pt)) {
+              workplaceType = parts[i].replace(/[()]/g, '').trim();
+            }
+          }
+        }
+      }
+    }
+
     // Fallback: Try to extract from subtitle container if location is still empty
     // LinkedIn often puts "Company · Location · Workplace" in the subtitle
     if (!location) {
