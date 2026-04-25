@@ -28,6 +28,10 @@
       'h1.t-24.t-bold',
       '.job-view-layout h1',
       '[data-test-job-title]',
+      // Generic fallbacks for hashed-class layouts (full-tab view)
+      '.jobs-details h1',
+      '.scaffold-layout__detail h1',
+      'main h1',
       'h1',
     ],
     company: [
@@ -37,6 +41,9 @@
       '.jobs-unified-top-card__company-name',
       '.topcard__org-name-link',
       '[data-test-company-name]',
+      // Note: bare a[href*="/company/"] is intentionally omitted here —
+      // it's too broad (would match nav/sidebar). The h1-proximity walk
+      // in scrapeJobData() handles the hashed-class full-tab layout instead.
     ],
     location: [
       '.job-details-jobs-unified-top-card__primary-description-container .tvm__text:first-child',
@@ -50,6 +57,9 @@
       '.jobs-unified-top-card__subtitle-bullet',
       '[data-test-job-location]',
       '.topcard__flavor--bullet',
+      // Generic fallbacks for full-tab hashed-class layout
+      '.jobs-details-top-card__subtitle .tvm__text',
+      '.jobs-details-top-card__subtitle',
     ],
     workplace: [
       '.job-details-jobs-unified-top-card__workplace-type',
@@ -85,6 +95,10 @@
       '.job-view-layout .jobs-apply-button',
       '.jobs-details__main-content .jobs-apply-button',
       '.scaffold-layout__main .jobs-apply-button',
+      // Additional full-tab selectors
+      '.jobs-apply-button--top-card',
+      'button[data-job-id]',
+      '.jobs-details-top-card__apply-button',
     ],
     saveButton: [
       'button[data-view-name*="job-save"]',
@@ -93,6 +107,8 @@
       // Full tab view
       '.job-view-layout button[data-view-name*="job-save"]',
       '.scaffold-layout__main .jobs-save-button',
+      'button[aria-label*="Save"]',
+      'button[aria-label*="save"]',
     ],
     topCardContainer: [
       '.job-details-jobs-unified-top-card__container--two-pane',
@@ -104,6 +120,9 @@
       '.job-view-layout .jobs-unified-top-card',
       '.scaffold-layout__main .jobs-unified-top-card',
       '.job-details-jobs-unified-top-card',
+      // Direct view layout
+      '.jobs-details__main-content',
+      '.scaffold-layout__detail',
     ],
     actionButtonsArea: [
       '.jobs-s-apply',
@@ -114,6 +133,9 @@
       '.job-view-layout .jobs-apply-button-container',
       '.job-view-layout .jobs-s-apply',
       '.job-details-jobs-unified-top-card__actions',
+      // Broader fallbacks for direct view
+      '.jobs-details-top-card__actions',
+      '.artdeco-card .jobs-s-apply',
     ],
   };
 
@@ -144,15 +166,113 @@
     return window.location.href.split('?')[0];
   }
 
+  // ── Parse title/company from the browser tab title ──────────
+  // LinkedIn always sets: "<Job Title> at <Company> | LinkedIn"
+  // or: "<Job Title> - <Company> | LinkedIn"
+  function parseTitleFromPageTitle() {
+    const raw = document.title || '';
+    // Strip trailing " | LinkedIn" or " - LinkedIn"
+    const stripped = raw.replace(/\s*[|–—-]\s*LinkedIn\s*$/i, '').trim();
+    // Split on " at " (most common) then " - "
+    const atIdx = stripped.lastIndexOf(' at ');
+    if (atIdx > 0) {
+      return {
+        title:   stripped.slice(0, atIdx).trim(),
+        company: stripped.slice(atIdx + 4).trim(),
+      };
+    }
+    const dashIdx = stripped.lastIndexOf(' - ');
+    if (dashIdx > 0) {
+      return {
+        title:   stripped.slice(0, dashIdx).trim(),
+        company: stripped.slice(dashIdx + 3).trim(),
+      };
+    }
+    // Can't split — treat whole thing as title
+    return { title: stripped, company: '' };
+  }
+
   // ── Scrape job data from the current page ────────────────────
   function scrapeJobData() {
-    const title        = cleanText($first(SEL.jobTitle));
-    const company      = cleanText($first(SEL.company));
+    let title        = cleanText($first(SEL.jobTitle));
+    let company      = cleanText($first(SEL.company));
     const locationEl   = $first(SEL.location);
     const workplaceEl  = $first(SEL.workplace);
     const salaryEl     = $first(SEL.salary);
     const managerEl    = $first(SEL.hiringManager);
     const managerLinkEl= $first(SEL.hiringManagerProfile);
+
+    // ── Fallback: parse document.title when DOM selectors yield nothing ──
+    // This is highly reliable on full-tab /jobs/view/ pages because LinkedIn
+    // always sets the tab title to "<Job Title> at <Company> | LinkedIn".
+    if (!title || !company) {
+      const parsed = parseTitleFromPageTitle();
+      if (!title && parsed.title)    title   = parsed.title;
+      if (!company && parsed.company) company = parsed.company;
+      if (parsed.title || parsed.company) {
+        console.log('[JobTracker] Used document.title fallback:', parsed);
+      }
+    }
+
+    // ── Fallback: company from nearest /company/ link to the h1 ──
+    if (!company) {
+      const h1 = document.querySelector('h1');
+      if (h1) {
+        // Walk up the DOM from h1 looking for a sibling/cousin company link
+        let node = h1.parentElement;
+        for (let depth = 0; depth < 5 && node; depth++, node = node.parentElement) {
+          const compLink = node.querySelector('a[href*="/company/"]');
+          if (compLink) { company = cleanText(compLink); break; }
+        }
+      }
+    }
+
+    // ── Fallback: location from subtitle area near h1 ──────────────
+    // On full-tab pages LinkedIn renders: Company · Location · Workplace
+    // in a text row near the h1. We read the .tvm__text spans or the whole
+    // subtitle text and parse out the parts.
+    let locationFromSubtitle = '';
+    if (!locationEl) {
+      const h1 = document.querySelector('h1');
+      if (h1) {
+        let node = h1.parentElement;
+        for (let depth = 0; depth < 8 && node; depth++, node = node.parentElement) {
+          // Look for a subtitle-style container: contains '·' or '•' separated text
+          const spans = node.querySelectorAll('.tvm__text, [class*="subtitle"] span, [class*="description"] span');
+          if (spans.length >= 2) {
+            // Pick first span that looks like a location (not a number, not workplace type)
+            for (const span of spans) {
+              const t = span.innerText?.trim();
+              if (!t) continue;
+              const tl = t.toLowerCase();
+              // Skip workplace-type-only or number-only strings
+              if (['remote', 'hybrid', 'on-site', 'onsite'].includes(tl)) continue;
+              if (/^\d+$/.test(t)) continue;
+              // Skip if it looks like applicant count (e.g. "42 applicants")
+              if (tl.includes('applicant') || tl.includes('follower')) continue;
+              locationFromSubtitle = t;
+              break;
+            }
+            if (locationFromSubtitle) break;
+          }
+          // Also try reading full text with '·' separator
+          const fullInner = node.innerText?.trim();
+          if (fullInner && fullInner.includes('·') && node.children.length <= 6) {
+            const parts = fullInner.split('·').map(p => p.trim()).filter(p => p);
+            // parts[0] likely company (skip), parts[1] likely location
+            if (parts.length >= 2) {
+              const possLoc = parts[1];
+              const pl = possLoc.toLowerCase();
+              if (!['remote', 'hybrid', 'on-site', 'onsite'].includes(pl) &&
+                  !pl.includes('applicant') && !pl.includes('follower')) {
+                locationFromSubtitle = possLoc;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
 
     // Location extraction - handle various LinkedIn formats
     let location = '';
@@ -160,10 +280,6 @@
     
     if (locationEl) {
       const fullText = cleanText(locationEl);
-      // Try to find location pattern: "City, State" or "City, Country" or just "City"
-      // Common patterns: "San Francisco, CA", "New York, United States", "Remote"
-      
-      // Check for separator patterns first
       const separators = ['·', '(', '—', '•'];
       let foundSeparator = false;
       
@@ -171,9 +287,7 @@
         if (fullText.includes(sep)) {
           const parts = fullText.split(sep).map(p => p.trim()).filter(p => p);
           if (parts.length >= 2) {
-            // First part is usually location
             location = parts[0];
-            // Check remaining parts for workplace type
             const remainingText = parts.slice(1).join(' ').toLowerCase();
             if (remainingText.includes('remote') || remainingText.includes('hybrid') || remainingText.includes('on-site') || remainingText.includes('onsite')) {
               workplaceType = parts[1].replace(/[()]/g, '').trim();
@@ -184,7 +298,6 @@
         }
       }
       
-      // If no separator found, use the whole text as location (unless it looks like workplace only)
       if (!foundSeparator) {
         const textLower = fullText.toLowerCase();
         if (textLower === 'remote' || textLower === 'hybrid' || textLower === 'on-site' || textLower === 'onsite') {
@@ -194,6 +307,12 @@
           location = fullText;
         }
       }
+    }
+
+    // Apply the subtitle fallback if DOM selectors found nothing
+    if (!location && locationFromSubtitle) {
+      location = locationFromSubtitle;
+      console.log('[JobTracker] Used subtitle proximity fallback for location:', location);
     }
     
     // Fallback: Try to extract from subtitle container if location is still empty
@@ -264,39 +383,83 @@
   }
 
   // ── Find best button injection point ────────────────────────
-  function findInjectionPoint() {
-    // Prefer inserting next to apply button
-    const applyBtn = $first(SEL.applyButton);
-    if (applyBtn) {
-      console.log('[JobTracker] Found injection point: apply button');
-      return { anchor: applyBtn, position: 'afterend' };
+  //
+  // KEY INSIGHT: LinkedIn wraps each action button in its own container:
+  //   <div class="action-row">          ← flex parent (the row)
+  //     <span class="apply-wrapper">    ← flex child 1
+  //       <button>Easy Apply</button>
+  //     </span>
+  //     <span class="save-wrapper">     ← flex child 2
+  //       <button aria-label="Save">💾</button>
+  //     </span>
+  //   </div>
+  //
+  // If we do afterend on <button aria-label="Save">, our div lands INSIDE
+  // <span class="save-wrapper"> — which is why it visually overlaps the
+  // Save button.
+  //
+  // The fix: walk UP from the button until we reach the element whose
+  // PARENT is a flex/grid container — that's the correct flex-child level
+  // to insert afterend, making our wrapper a true peer sibling in the row.
+  // ─────────────────────────────────────────────────────────────
+  function findFlexSibling(btn) {
+    // Start at btn.parentElement, NOT btn itself.
+    // Reason: LinkedIn wraps each button in its own div/span that IS already
+    // a flex container. Starting at btn would return the raw <button> at depth=0,
+    // causing afterend to insert inside that wrapper (the overlap bug).
+    // Starting one level up means we correctly identify the wrapper div as the
+    // flex child of the outer action row, so afterend puts us after it.
+    let node = btn.parentElement || btn;
+    for (let depth = 0; depth < 8 && node && node.parentElement && node !== document.body; depth++) {
+      const parentDisplay = window.getComputedStyle(node.parentElement).display;
+      if (parentDisplay === 'flex' || parentDisplay === 'inline-flex' || parentDisplay === 'grid') {
+        console.log('[JobTracker] findFlexSibling: depth=' + depth + ' tag=' + node.tagName + ' class=' + (node.className?.toString().slice(0,40)));
+        return node;
+      }
+      node = node.parentElement;
     }
+    // Fallback: immediate parent of the button
+    return btn.parentElement || btn;
+  }
 
+  function findInjectionPoint() {
+    // ── Priority 1: AFTER LinkedIn's native Save button ──────────
+    // Use findFlexSibling so we insert at the flex-row child level,
+    // not inside the Save button's own wrapper span.
     const saveBtn = $first(SEL.saveButton);
     if (saveBtn) {
-      console.log('[JobTracker] Found injection point: save button');
-      return { anchor: saveBtn, position: 'afterend' };
+      const anchor = findFlexSibling(saveBtn);
+      console.log('[JobTracker] Injection: afterend Save flex-sibling', anchor?.tagName);
+      return { anchor, position: 'afterend' };
     }
 
+    // ── Priority 2: AFTER Apply button ───────────────────────────
+    // Reached when there's no native Save button (external apply jobs).
+    const applyBtn = $first(SEL.applyButton);
+    if (applyBtn) {
+      const anchor = findFlexSibling(applyBtn);
+      console.log('[JobTracker] Injection: afterend Apply flex-sibling', anchor?.tagName);
+      return { anchor, position: 'afterend' };
+    }
+
+    // ── Priority 3: append inside the action area container ──────
     const actionArea = $first(SEL.actionButtonsArea);
     if (actionArea) {
-      console.log('[JobTracker] Found injection point: action area');
+      console.log('[JobTracker] Injection: beforeend action area');
       return { anchor: actionArea, position: 'beforeend' };
     }
 
-    // Last resort: find any button container in the top card area
+    // ── Last resort: top card ─────────────────────────────────────
     const topCard = document.querySelector('.job-details-jobs-unified-top-card, .jobs-unified-top-card');
     if (topCard) {
-      // Try to find any button row
       const buttonRow = topCard.querySelector('[class*="button"], [class*="action"], .mt4, .mt5');
       if (buttonRow) {
-        console.log('[JobTracker] Found injection point: top card button row');
-        return { anchor: buttonRow, position: 'afterend' };
+        console.log('[JobTracker] Injection: beforeend top card button row');
+        return { anchor: buttonRow, position: 'beforeend' };
       }
-      // Try to find the primary description container as anchor
       const descContainer = topCard.querySelector('.job-details-jobs-unified-top-card__primary-description-container, .jobs-unified-top-card__primary-description');
       if (descContainer) {
-        console.log('[JobTracker] Found injection point: description container');
+        console.log('[JobTracker] Injection: afterend description container');
         return { anchor: descContainer, position: 'afterend' };
       }
     }
@@ -434,6 +597,15 @@
     const btn = document.getElementById('jt-save-btn');
     closeMenu();
     setLoadingState(btn);
+
+    // On full-tab /jobs/view/ pages the h1 may not be in the DOM yet when
+    // the button is first clicked (button injects as soon as any anchor is
+    // found). Wait up to 4 s for the h1 before attempting to scrape.
+    const isDirectView = window.location.href.includes('/jobs/view/');
+    if (isDirectView) {
+      const titleReady = await waitForElement(SEL.jobTitle, 4000);
+      console.log('[JobTracker] saveJob: title element ready?', !!titleReady, titleReady?.tagName);
+    }
 
     const jobData = scrapeJobData();
     if (!jobData.title && !jobData.company) {
@@ -573,14 +745,24 @@
         return;
       }
 
-      if (jobId === state.currentJobId) {
-        console.log('[JobTracker] Same job ID, skipping');
+      // Skip only if the same job AND our button is already in the DOM.
+      // On direct /jobs/view/ loads, observers may set currentJobId before
+      // the page content is ready, so we must re-inject if button is missing.
+      const btnAlreadyPresent = !!document.getElementById('jt-save-btn');
+      if (jobId === state.currentJobId && btnAlreadyPresent) {
+        console.log('[JobTracker] Same job ID and button already present, skipping');
         return;
       }
       state.currentJobId = jobId;
 
+      // Build the full selector list including top-card containers as fallbacks
+      const waitSelectors = SEL.applyButton
+        .concat(SEL.saveButton)
+        .concat(SEL.topCardContainer)
+        .concat(SEL.actionButtonsArea);
+
       // Wait for LinkedIn's content to render
-      const foundElement = await waitForElement(SEL.applyButton.concat(SEL.saveButton), 5000);
+      const foundElement = await waitForElement(waitSelectors, 8000);
       console.log('[JobTracker] Wait for element result:', foundElement?.tagName, foundElement?.className);
 
       const injected = injectButton();
@@ -631,6 +813,60 @@
   contentObserver.observe(document.body, { subtree: true, childList: true });
 
   // ── Boot ─────────────────────────────────────────────────────
+  //
+  // For direct /jobs/view/<id>/ URLs the page is a full hard-load (not SPA
+  // navigation). The URL/content MutationObservers fire many times during
+  // render and can race ahead of the boot delay, pre-setting currentJobId so
+  // that the boot's onNavigate() call thinks "same job, skip". We avoid this
+  // by running a dedicated direct-injection path that:
+  //   1. Waits for a meaningful element using waitForElement (up to 10 s)
+  //   2. Calls injectButton() directly — bypassing the debounce and guard
+  //   3. Falls back to periodic retries if the first attempt fails
+  // ─────────────────────────────────────────────────────────────
+  async function bootDirectView(jobId) {
+    console.log('[JobTracker] bootDirectView: waiting for page elements...');
+
+    const waitSelectors = SEL.applyButton
+      .concat(SEL.saveButton)
+      .concat(SEL.topCardContainer)
+      .concat(SEL.actionButtonsArea);
+
+    const foundEl = await waitForElement(waitSelectors, 10000);
+    console.log('[JobTracker] bootDirectView: foundEl =', foundEl?.tagName, foundEl?.className);
+
+    state.currentJobId = jobId;
+    const injected = injectButton();
+    console.log('[JobTracker] bootDirectView: injection result =', injected);
+
+    if (injected) {
+      checkSavedStatus();
+      return;
+    }
+
+    // If still not injected, retry up to 3 times at 3-second intervals
+    let retries = 0;
+    const retryInterval = setInterval(() => {
+      retries++;
+      const hasBtn   = !!document.getElementById('jt-save-btn');
+      const hasAnchor = !!$first(waitSelectors);
+      console.log('[JobTracker] bootDirectView retry #' + retries + ': hasBtn=' + hasBtn + ', hasAnchor=' + hasAnchor);
+
+      if (hasBtn) {
+        clearInterval(retryInterval);
+        return;
+      }
+
+      if (hasAnchor || retries >= 3) {
+        clearInterval(retryInterval);
+        state.currentJobId = null; // allow guard bypass
+        const ok = injectButton();
+        state.currentJobId = jobId;
+        console.log('[JobTracker] bootDirectView retry injection:', ok);
+        if (ok) checkSavedStatus();
+      }
+    }, 3000);
+  }
+
   function boot() {
     const url = location.href;
     console.log('[JobTracker] === BOOT START ===');
@@ -639,39 +875,26 @@
     // Check if this is a direct job view URL (full tab)
     const isDirectJobView = url.includes('/jobs/view/');
     console.log('[JobTracker] isDirectJobView:', isDirectJobView);
-    
-    // Initial delay for LinkedIn's render
-    const initialDelay = isDirectJobView ? 3000 : 1500;
-    console.log('[JobTracker] Starting timer:', initialDelay, 'ms');
-    
-    setTimeout(function() {
-      console.log('[JobTracker] === DELAY COMPLETE ===');
-      console.log('[JobTracker] Calling onNavigate...');
-      onNavigate();
-      
-      // Set up retries for full tab views
-      if (isDirectJobView) {
-        console.log('[JobTracker] Setting up full tab retries...');
-        [3000, 6000, 9000].forEach(function(delay) {
-          setTimeout(function() {
-            try {
-              const hasBtn = document.getElementById('jt-save-btn');
-              const hasApply = $first(SEL.applyButton);
-              const hasSave = $first(SEL.saveButton);
-              console.log('[JobTracker] Retry (' + delay + 'ms): hasBtn=' + !!hasBtn + ', hasApply=' + !!hasApply + ', hasSave=' + !!hasSave);
-              
-              if (!hasBtn && (hasApply || hasSave)) {
-                console.log('[JobTracker] Retrying injection...');
-                state.currentJobId = null;
-                onNavigate();
-              }
-            } catch (e) {
-              console.error('[JobTracker] Retry error:', e);
-            }
-          }, delay);
-        });
+
+    if (isDirectJobView) {
+      // Bypass the debounce/observer race entirely for direct views
+      const jobId = getCurrentJobId();
+      console.log('[JobTracker] Direct view job ID:', jobId);
+      if (jobId) {
+        bootDirectView(jobId);
+      } else {
+        // URL pattern matched but no ID extracted — fall back to normal path
+        setTimeout(() => onNavigate(), 1500);
       }
-    }, initialDelay);
+    } else {
+      // Normal SPA navigation — short delay then hand off to onNavigate
+      const initialDelay = 1500;
+      console.log('[JobTracker] Starting SPA timer:', initialDelay, 'ms');
+      setTimeout(() => {
+        console.log('[JobTracker] === DELAY COMPLETE ===');
+        onNavigate();
+      }, initialDelay);
+    }
   }
 
   // Start boot sequence
