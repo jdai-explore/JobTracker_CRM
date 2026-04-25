@@ -16,7 +16,7 @@ Spend your energy on what actually matters — landing the role — not on sprea
 ## Features
 
 - **One-Click Save** — Button injected right next to LinkedIn's native Apply button
-- **Smart Scraping** — Auto-extracts: Job Title, Company, Location, Workplace Type (Remote/Hybrid/On-site), Salary Range, Hiring Manager name & profile URL, Job URL, Date Added
+- **Smart Scraping** — Auto-extracts: Job Title, Company, Location, Job URL, Date Added
 - **Export Anywhere** — Download CSV anytime. Opens in Excel, Google Sheets, Notion, Airtable, etc.
 - **Duplicate Detection** — Button turns gray if you've already saved that job, showing the date saved
 - **Quick Notes** — Right-click the button to add a note before saving (e.g., "Ask Dave for referral")
@@ -85,11 +85,7 @@ Spend your energy on what actually matters — landing the role — not on sprea
 | Job Title | Auto-extracted from LinkedIn |
 | Company | Auto-extracted |
 | Location | Auto-extracted |
-| Workplace Type | Remote / Hybrid / On-site |
-| Salary Range | Auto-extracted if listed |
 | Job URL | Direct link to the listing |
-| Hiring Manager | Name if shown on listing |
-| Manager Profile URL | LinkedIn profile link |
 | Notes | Your quick note from right-click menu |
 | Date Applied | Add manually in export |
 | Interview Date | Add manually in export |
