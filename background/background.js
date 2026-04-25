@@ -1,217 +1,157 @@
 // ============================================================
 // JobTracker — Background Service Worker
-// Handles: OAuth2, Google Sheets API, storage management
+// Handles: Local storage, CSV export
 // Built by Jayadev | Free to use and modify. Good luck! 🚀
 // ============================================================
 
-const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
-const DRIVE_API_BASE  = 'https://www.googleapis.com/drive/v3';
+const STORAGE_KEY = 'jobtracker_jobs';
 
-// ── OAuth ────────────────────────────────────────────────────
-async function getAuthToken(interactive = false) {
-  return new Promise((resolve, reject) => {
-    chrome.identity.getAuthToken({ interactive }, (token) => {
-      if (chrome.runtime.lastError || !token) {
-        reject(chrome.runtime.lastError?.message || 'Auth failed');
-      } else {
-        resolve(token);
-      }
-    });
-  });
+// ── Job Data Helpers ─────────────────────────────────────────
+async function getJobs() {
+  const data = await chrome.storage.local.get(STORAGE_KEY);
+  return data[STORAGE_KEY] || [];
 }
 
-async function revokeToken() {
-  return new Promise((resolve) => {
-    chrome.identity.getAuthToken({ interactive: false }, (token) => {
-      if (token) {
-        chrome.identity.removeCachedAuthToken({ token }, () => {
-          fetch(`https://accounts.google.com/o/oauth2/revoke?token=${token}`);
-        });
-      }
-      resolve();
-    });
-  });
-}
-
-// ── Google Sheets API helpers ────────────────────────────────
-async function sheetsRequest(url, method = 'GET', body = null, token) {
-  const opts = {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+async function saveJob(jobData) {
+  const jobs = await getJobs();
+  
+  // Check for duplicates by URL
+  const existingIndex = jobs.findIndex(j => 
+    j.url && jobData.url && j.url.split('?')[0] === jobData.url.split('?')[0]
+  );
+  
+  const now = new Date();
+  const job = {
+    id: existingIndex >= 0 ? jobs[existingIndex].id : crypto.randomUUID(),
+    dateAdded: existingIndex >= 0 ? jobs[existingIndex].dateAdded : now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+    timestamp: existingIndex >= 0 ? jobs[existingIndex].timestamp : now.toISOString(),
+    status: jobData.status || '🔖 Saved',
+    title: jobData.title || '',
+    company: jobData.company || '',
+    location: jobData.location || '',
+    workplaceType: jobData.workplaceType || '',
+    salary: jobData.salary || '',
+    url: jobData.url || '',
+    hiringManager: jobData.hiringManager || '',
+    managerProfileUrl: jobData.managerProfileUrl || '',
+    notes: jobData.notes || '',
+    dateApplied: jobData.dateApplied || '',
+    interviewDate: jobData.interviewDate || '',
+    offer: jobData.offer || '',
+    followUpNotes: jobData.followUpNotes || ''
   };
-  if (body) opts.body = JSON.stringify(body);
-
-  const res = await fetch(url, opts);
-  if (res.status === 401) throw new Error('UNAUTHORIZED');
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `HTTP ${res.status}`);
+  
+  if (existingIndex >= 0) {
+    jobs[existingIndex] = job;
+  } else {
+    jobs.unshift(job); // Add to beginning (newest first)
   }
-  return res.json();
+  
+  await chrome.storage.local.set({ [STORAGE_KEY]: jobs });
+  return { job, isUpdate: existingIndex >= 0 };
 }
 
-// ── Create master tracker spreadsheet ───────────────────────
-async function createTrackerSheet(token) {
+async function deleteJob(jobId) {
+  const jobs = await getJobs();
+  const filtered = jobs.filter(j => j.id !== jobId);
+  await chrome.storage.local.set({ [STORAGE_KEY]: filtered });
+}
+
+async function updateJob(jobId, updates) {
+  const jobs = await getJobs();
+  const index = jobs.findIndex(j => j.id === jobId);
+  if (index >= 0) {
+    jobs[index] = { ...jobs[index], ...updates };
+    await chrome.storage.local.set({ [STORAGE_KEY]: jobs });
+    return jobs[index];
+  }
+  return null;
+}
+
+async function checkIfAlreadySaved(jobUrl) {
+  if (!jobUrl) return null;
+  const jobs = await getJobs();
+  return jobs.find(j => 
+    j.url && jobUrl && j.url.split('?')[0] === jobUrl.split('?')[0]
+  ) || null;
+}
+
+// ── CSV Export ─────────────────────────────────────────────────
+function escapeCSV(value) {
+  if (value == null) return '';
+  const str = String(value);
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+async function exportToCSV() {
+  const jobs = await getJobs();
+  
   const headers = [
     'Date Added', 'Status', 'Job Title', 'Company', 'Location',
     'Workplace Type', 'Salary Range', 'Job URL',
     'Hiring Manager', 'Manager Profile URL', 'Notes', 'Date Applied',
     'Interview Date', 'Offer', 'Follow-Up Notes'
   ];
-
-  const spreadsheet = await sheetsRequest(SHEETS_API_BASE, 'POST', {
-    properties: { title: '🗂️ My Job Search Tracker' },
-    sheets: [{
-      properties: {
-        title: 'Applications',
-        gridProperties: { frozenRowCount: 1 }
-      },
-      data: [{
-        startRow: 0, startColumn: 0,
-        rowData: [{
-          values: headers.map((h, i) => ({
-            userEnteredValue: { stringValue: h },
-            userEnteredFormat: {
-              backgroundColor: i === 0 ? { red: 0.11, green: 0.11, blue: 0.18 }
-                : i === 1 ? { red: 0.16, green: 0.30, blue: 0.89 }
-                : { red: 0.11, green: 0.11, blue: 0.18 },
-              textFormat: {
-                foregroundColor: { red: 1, green: 1, blue: 1 },
-                bold: true,
-                fontSize: 11,
-                fontFamily: 'Google Sans'
-              },
-              horizontalAlignment: 'CENTER',
-              verticalAlignment: 'MIDDLE'
-            }
-          }))
-        }]
-      }]
-    }]
-  }, token);
-
-  const sheetId = spreadsheet.sheets[0].properties.sheetId;
-  const spreadsheetId = spreadsheet.spreadsheetId;
-
-  // Apply column widths and formatting
-  await sheetsRequest(
-    `${SHEETS_API_BASE}/${spreadsheetId}:batchUpdate`, 'POST',
-    {
-      requests: [
-        // Column widths
-        { updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 110 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: 1, endIndex: 2 }, properties: { pixelSize: 130 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: 2, endIndex: 3 }, properties: { pixelSize: 200 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: 3, endIndex: 4 }, properties: { pixelSize: 160 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: 7, endIndex: 8 }, properties: { pixelSize: 220 }, fields: 'pixelSize' } },
-        { updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: 10, endIndex: 11 }, properties: { pixelSize: 240 }, fields: 'pixelSize' } },
-        // Row height for header
-        { updateDimensionProperties: { range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 40 }, fields: 'pixelSize' } },
-        // Status dropdown validation
-        {
-          setDataValidation: {
-            range: { sheetId, startRowIndex: 1, endRowIndex: 1000, startColumnIndex: 1, endColumnIndex: 2 },
-            rule: {
-              condition: {
-                type: 'ONE_OF_LIST',
-                values: [
-                  { userEnteredValue: '🔖 Saved' },
-                  { userEnteredValue: '✅ Applied — LinkedIn' },
-                  { userEnteredValue: '✅ Applied — Company Site' },
-                  { userEnteredValue: '📞 Phone Screen' },
-                  { userEnteredValue: '🎯 Interview' },
-                  { userEnteredValue: '🤝 Offer' },
-                  { userEnteredValue: '❌ Rejected' },
-                  { userEnteredValue: '👻 Ghosted' }
-                ]
-              },
-              strict: false,
-              showCustomUi: true
-            }
-          }
-        },
-        // Alternate row banding
-        {
-          addBanding: {
-            bandedRange: {
-              bandedRangeId: 1,
-              range: { sheetId, startRowIndex: 1, endRowIndex: 1000, startColumnIndex: 0, endColumnIndex: 15 },
-              rowProperties: {
-                headerColor: { red: 0.11, green: 0.11, blue: 0.18 },
-                firstBandColor: { red: 0.97, green: 0.97, blue: 0.99 },
-                secondBandColor: { red: 1, green: 1, blue: 1 }
-              }
-            }
-          }
-        }
-      ]
-    },
-    token
-  );
-
-  return spreadsheetId;
+  
+  const rows = jobs.map(job => [
+    job.dateAdded,
+    job.status,
+    job.title,
+    job.company,
+    job.location,
+    job.workplaceType,
+    job.salary,
+    job.url,
+    job.hiringManager,
+    job.managerProfileUrl,
+    job.notes,
+    job.dateApplied,
+    job.interviewDate,
+    job.offer,
+    job.followUpNotes
+  ]);
+  
+  const csvContent = [
+    headers.map(escapeCSV).join(','),
+    ...rows.map(row => row.map(escapeCSV).join(','))
+  ].join('\n');
+  
+  return csvContent;
 }
 
-// ── Append a job row ─────────────────────────────────────────
-async function appendJobRow(spreadsheetId, jobData, token) {
+async function downloadCSV() {
+  const csvContent = await exportToCSV();
+  
+  // Convert to data URL (blobs don't work well in service workers)
+  const encodedContent = encodeURIComponent(csvContent);
+  const dataUrl = `data:text/csv;charset=utf-8,${encodedContent}`;
+  
   const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-
-  const row = [
-    dateStr,
-    jobData.status || '🔖 Saved',
-    jobData.title || '',
-    jobData.company || '',
-    jobData.location || '',
-    jobData.workplaceType || '',
-    jobData.salary || '',
-    jobData.url || '',
-    jobData.hiringManager || '',
-    jobData.managerProfileUrl || '',
-    jobData.notes || '',
-    '', '', '', ''
-  ];
-
-  const result = await sheetsRequest(
-    `${SHEETS_API_BASE}/${spreadsheetId}/values/Applications!A:O:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-    'POST',
-    { values: [row] },
-    token
-  );
-
-  // Extract row number from updatedRange (e.g. "Applications!A42:O42")
-  const range = result?.updates?.updatedRange || '';
-  const match = range.match(/A(\d+)/);
-  return match ? parseInt(match[1]) : '?';
+  const filename = `job-tracker-${now.toISOString().split('T')[0]}.csv`;
+  
+  await chrome.downloads.download({
+    url: dataUrl,
+    filename: filename,
+    saveAs: true
+  });
 }
 
-// ── Check if job URL already saved ──────────────────────────
-async function checkIfAlreadySaved(spreadsheetId, jobUrl, token) {
-  if (!jobUrl) return null;
-  try {
-    const data = await sheetsRequest(
-      `${SHEETS_API_BASE}/${spreadsheetId}/values/Applications!A:H`,
-      'GET', null, token
-    );
-    const rows = data.values || [];
-    for (let i = 1; i < rows.length; i++) {
-      const rowUrl = rows[i][7] || '';
-      if (rowUrl && jobUrl && rowUrl.includes(jobUrl.split('?')[0])) {
-        return { rowNumber: i + 1, dateAdded: rows[i][0], status: rows[i][1] };
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-// ── Get spreadsheet URL ──────────────────────────────────────
-function getSpreadsheetUrl(spreadsheetId) {
-  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+// ── Get Stats ─────────────────────────────────────────────────
+async function getStats() {
+  const jobs = await getJobs();
+  const statusCounts = {};
+  jobs.forEach(j => {
+    statusCounts[j.status] = (statusCounts[j.status] || 0) + 1;
+  });
+  
+  return {
+    total: jobs.length,
+    byStatus: statusCounts,
+    recent: jobs.slice(0, 5)
+  };
 }
 
 // ── Message handler ──────────────────────────────────────────
@@ -225,82 +165,48 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 async function handleMessage(msg, sender) {
   switch (msg.type) {
 
-    case 'SIGN_IN': {
-      const token = await getAuthToken(true);
-      // Get user profile
-      const profile = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: { Authorization: `Bearer ${token}` }
-      }).then(r => r.json());
-
-      await chrome.storage.local.set({ userEmail: profile.email, userName: profile.name });
-      return { success: true, email: profile.email, name: profile.name };
+    case 'GET_STATS': {
+      const stats = await getStats();
+      return { success: true, ...stats };
     }
 
-    case 'SIGN_OUT': {
-      await revokeToken();
-      await chrome.storage.local.remove(['userEmail', 'userName', 'spreadsheetId']);
-      return { success: true };
-    }
-
-    case 'GET_STATUS': {
-      const data = await chrome.storage.local.get(['userEmail', 'spreadsheetId']);
-      return { success: true, ...data };
-    }
-
-    case 'CREATE_SHEET': {
-      const token = await getAuthToken(false);
-      const spreadsheetId = await createTrackerSheet(token);
-      await chrome.storage.local.set({ spreadsheetId });
-      return { success: true, spreadsheetId, url: getSpreadsheetUrl(spreadsheetId) };
-    }
-
-    case 'CONNECT_SHEET': {
-      // Validate the provided spreadsheet ID
-      const token = await getAuthToken(false);
-      try {
-        await sheetsRequest(`${SHEETS_API_BASE}/${msg.spreadsheetId}?fields=spreadsheetId`, 'GET', null, token);
-        await chrome.storage.local.set({ spreadsheetId: msg.spreadsheetId });
-        return { success: true, spreadsheetId: msg.spreadsheetId };
-      } catch (e) {
-        throw new Error('Could not access that spreadsheet. Make sure the ID is correct and the sheet is accessible.');
-      }
+    case 'GET_JOBS': {
+      const jobs = await getJobs();
+      return { success: true, jobs };
     }
 
     case 'SAVE_JOB': {
-      const { spreadsheetId } = await chrome.storage.local.get('spreadsheetId');
-      if (!spreadsheetId) throw new Error('No spreadsheet connected. Please set up in the extension popup.');
+      const result = await saveJob(msg.jobData);
+      return { 
+        success: true, 
+        job: result.job, 
+        isUpdate: result.isUpdate,
+        totalJobs: (await getJobs()).length
+      };
+    }
 
-      let token;
-      try {
-        token = await getAuthToken(false);
-      } catch {
-        token = await getAuthToken(true);
-      }
+    case 'UPDATE_JOB': {
+      const job = await updateJob(msg.jobId, msg.updates);
+      return { success: true, job };
+    }
 
-      const rowNumber = await appendJobRow(spreadsheetId, msg.jobData, token);
-      return { success: true, rowNumber, spreadsheetUrl: getSpreadsheetUrl(spreadsheetId) };
+    case 'DELETE_JOB': {
+      await deleteJob(msg.jobId);
+      return { success: true };
     }
 
     case 'CHECK_SAVED': {
-      const { spreadsheetId } = await chrome.storage.local.get('spreadsheetId');
-      if (!spreadsheetId) return { success: true, saved: false };
-
-      let token;
-      try {
-        token = await getAuthToken(false);
-      } catch {
-        return { success: true, saved: false };
-      }
-
-      const result = await checkIfAlreadySaved(spreadsheetId, msg.url, token);
-      return { success: true, saved: !!result, info: result };
+      const existing = await checkIfAlreadySaved(msg.url);
+      return { success: true, saved: !!existing, info: existing };
     }
 
-    case 'OPEN_SHEET': {
-      const { spreadsheetId } = await chrome.storage.local.get('spreadsheetId');
-      if (spreadsheetId) {
-        chrome.tabs.create({ url: getSpreadsheetUrl(spreadsheetId) });
-      }
+    case 'EXPORT_CSV': {
+      const csvContent = await exportToCSV();
+      return { success: true, csvContent };
+    }
+
+    case 'DOWNLOAD_CSV': {
+      await downloadCSV();
       return { success: true };
     }
 
@@ -309,4 +215,4 @@ async function handleMessage(msg, sender) {
   }
 }
 
-console.log('[JobTracker] Background service worker ready. Built by Jayadev 🚀');
+console.log('[JobTracker] Background service worker ready. Local storage mode. Built by Jayadev 🚀');

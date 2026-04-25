@@ -1,56 +1,55 @@
 // ============================================================
-// JobTracker — Popup Script
+// JobTracker — Popup Script (Local Storage Mode)
 // Built by Jayadev | Free to use and modify. Good luck! 🚀
 // ============================================================
 
 const $ = id => document.getElementById(id);
 
-// ── Views ────────────────────────────────────────────────────
-const views = {
-  signin: $('view-signin'),
-  setup:  $('view-setup'),
-  ready:  $('view-ready'),
-};
+const THEME_KEY = 'jobtracker_theme';
 
-function showView(name) {
-  Object.values(views).forEach(v => { if (v) v.style.display = 'none'; });
-  if (views[name]) views[name].style.display = 'block';
+// ── Theme Management ────────────────────────────────────────────
+function getStoredTheme() {
+  return localStorage.getItem(THEME_KEY) || 'dark';
 }
 
-// ── Status message helper ─────────────────────────────────────
-function showStatus(msg, type = 'loading') {
-  const el = $('setup-status');
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `status-msg status-msg--${type}`;
-  el.style.display = 'block';
+function setStoredTheme(theme) {
+  localStorage.setItem(THEME_KEY, theme);
 }
 
-function hideStatus() {
-  const el = $('setup-status');
-  if (el) el.style.display = 'none';
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const lightIcon = $('theme-icon-light');
+  const darkIcon = $('theme-icon-dark');
+  if (lightIcon && darkIcon) {
+    if (theme === 'light') {
+      lightIcon.style.display = 'none';
+      darkIcon.style.display = 'block';
+    } else {
+      lightIcon.style.display = 'block';
+      darkIcon.style.display = 'none';
+    }
+  }
 }
 
-// ── Populate user info ────────────────────────────────────────
-function populateUser(email, name) {
-  if (!email) return;
+function toggleTheme() {
+  const current = getStoredTheme();
+  const next = current === 'dark' ? 'light' : 'dark';
+  setStoredTheme(next);
+  applyTheme(next);
+}
 
-  // Header avatar via gravatar / initial fallback
-  const avatarUrl = `https://www.gravatar.com/avatar/${btoa(email.toLowerCase())}?s=60&d=identicon`;
-  const nameStr = name || email.split('@')[0];
+function initTheme() {
+  const theme = getStoredTheme();
+  applyTheme(theme);
+}
 
-  $('header-user').style.display = 'flex';
-  $('user-avatar').src = avatarUrl;
+// ── Info Modal ────────────────────────────────────────────────
+function openInfoModal() {
+  $('info-modal').style.display = 'flex';
+}
 
-  // Setup view
-  if ($('user-card-avatar'))  $('user-card-avatar').src = avatarUrl;
-  if ($('user-card-name'))    $('user-card-name').textContent = nameStr;
-  if ($('user-card-email'))   $('user-card-email').textContent = email;
-
-  // Ready view
-  if ($('user-card-ready-avatar')) $('user-card-ready-avatar').src = avatarUrl;
-  if ($('user-card-ready-name'))   $('user-card-ready-name').textContent = nameStr;
-  if ($('user-card-ready-email'))  $('user-card-ready-email').textContent = email;
+function closeInfoModal() {
+  $('info-modal').style.display = 'none';
 }
 
 // ── Send message to background ────────────────────────────────
@@ -58,133 +57,171 @@ async function msg(type, data = {}) {
   return chrome.runtime.sendMessage({ type, ...data });
 }
 
-// ── Boot: check current state ─────────────────────────────────
-async function init() {
+// ── Render status badges ──────────────────────────────────────
+function renderStatusBadges(byStatus) {
+  const container = $('status-badges');
+  if (!container) return;
+  
+  const statusEmojis = {
+    '🔖 Saved': '🔖',
+    '✅ Applied — LinkedIn': '✅',
+    '✅ Applied — Company Site': '✅',
+    '📞 Phone Screen': '📞',
+    '🎯 Interview': '🎯',
+    '🤝 Offer': '🤝',
+    '❌ Rejected': '❌',
+    '👻 Ghosted': '👻'
+  };
+  
+  const entries = Object.entries(byStatus)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 4);
+  
+  if (entries.length === 0) {
+    container.innerHTML = '<span class="status-badge status-badge--empty">No status yet</span>';
+    return;
+  }
+  
+  container.innerHTML = entries.map(([status, count]) => {
+    const emoji = statusEmojis[status] || '●';
+    return `<span class="status-badge">${emoji} ${count}</span>`;
+  }).join('');
+}
+
+// ── Format relative time ──────────────────────────────────────
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// ── Render job item ───────────────────────────────────────────
+function renderJobItem(job) {
+  const title = job.title || 'Untitled Job';
+  const company = job.company || 'Unknown Company';
+  const location = job.location || '';
+  const status = job.status || '🔖 Saved';
+  const relativeTime = formatRelativeTime(job.timestamp);
+  
+  return `
+    <div class="job-item" data-id="${job.id}">
+      <div class="job-item__main">
+        <div class="job-item__title">${escapeHtml(title)}</div>
+        <div class="job-item__meta">
+          <span class="job-item__company">${escapeHtml(company)}</span>
+          ${location ? `<span class="job-item__location">${escapeHtml(location)}</span>` : ''}
+        </div>
+      </div>
+      <div class="job-item__aside">
+        <span class="job-item__status">${status}</span>
+        <span class="job-item__time">${relativeTime}</span>
+      </div>
+    </div>
+  `;
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ── Render recent jobs ────────────────────────────────────────
+function renderRecentJobs(jobs) {
+  const container = $('recent-jobs');
+  if (!container) return;
+  
+  if (jobs.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <span class="empty-state__icon">💼</span>
+        <p>No jobs saved yet.</p>
+        <p class="empty-state__hint">Go to LinkedIn Jobs and click "Save to Tracker"</p>
+      </div>
+    `;
+    return;
+  }
+  
+  container.innerHTML = jobs.slice(0, 5).map(renderJobItem).join('');
+}
+
+// ── Load and display stats ───────────────────────────────────
+async function loadStats() {
   try {
-    const status = await msg('GET_STATUS');
-    const { userEmail, spreadsheetId } = status;
-
-    if (!userEmail) {
-      showView('signin');
-      return;
-    }
-
-    populateUser(userEmail, status.userName);
-
-    if (!spreadsheetId) {
-      showView('setup');
-    } else {
-      showView('ready');
-    }
+    const res = await msg('GET_STATS');
+    if (!res.success) throw new Error(res.error);
+    
+    $('total-jobs').textContent = res.total || 0;
+    renderStatusBadges(res.byStatus || {});
+    renderRecentJobs(res.recent || []);
   } catch (err) {
-    showView('signin');
-    console.error('[JobTracker] Init error:', err);
+    console.error('[JobTracker] Failed to load stats:', err);
+    $('total-jobs').textContent = '?';
   }
 }
 
-// ── Sign In ───────────────────────────────────────────────────
-$('sign-in-btn')?.addEventListener('click', async () => {
-  const btn = $('sign-in-btn');
+// ── Export CSV ─────────────────────────────────────────────────
+async function exportCSV() {
+  const btn = $('export-btn');
+  const originalHTML = btn.innerHTML;
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Connecting…';
-
+  btn.innerHTML = `<span class="spinner spinner--sm"></span> Exporting…`;
+  
   try {
-    const res = await msg('SIGN_IN');
-    if (!res.success) throw new Error(res.error);
-    populateUser(res.email, res.name);
-    showView('setup');
+    await msg('DOWNLOAD_CSV');
+    btn.innerHTML = `✓ Exported!`;
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+    }, 2000);
   } catch (err) {
-    btn.disabled = false;
-    btn.innerHTML = `
-      <svg class="btn__google-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-      </svg>
-      Sign in with Google`;
-    alert(`Sign in failed: ${err.message || err}. Make sure you've added your OAuth client ID to manifest.json.`);
+    console.error('[JobTracker] Export failed:', err);
+    btn.innerHTML = `❌ Failed`;
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+    }, 2000);
+  }
+}
+
+// ── Open viewer page ──────────────────────────────────────────
+function openViewer() {
+  const viewerUrl = chrome.runtime.getURL('viewer/viewer.html');
+  chrome.tabs.create({ url: viewerUrl });
+}
+
+// ── Event listeners ───────────────────────────────────────────
+$('export-btn')?.addEventListener('click', exportCSV);
+$('view-all-btn')?.addEventListener('click', openViewer);
+$('theme-toggle')?.addEventListener('click', toggleTheme);
+$('info-btn')?.addEventListener('click', openInfoModal);
+$('info-modal-close')?.addEventListener('click', closeInfoModal);
+$('info-modal')?.addEventListener('click', (e) => {
+  if (e.target.classList.contains('modal__overlay')) {
+    closeInfoModal();
   }
 });
 
-// ── Sign Out ──────────────────────────────────────────────────
-$('sign-out-btn')?.addEventListener('click', async () => {
-  if (!confirm('Sign out from JobTracker?')) return;
-  await msg('SIGN_OUT');
-  $('header-user').style.display = 'none';
-  showView('signin');
-});
-
-// ── Create New Sheet ──────────────────────────────────────────
-$('create-sheet-btn')?.addEventListener('click', async () => {
-  const btn = $('create-sheet-btn');
-  btn.disabled = true;
-  btn.innerHTML = `<span class="setup-opt__icon">⏳</span><div><strong>Creating your sheet…</strong><p>Setting up columns, formatting & dropdowns</p></div>`;
-  showStatus('Creating your "🗂️ My Job Search Tracker" in Google Drive…', 'loading');
-
-  try {
-    const res = await msg('CREATE_SHEET');
-    if (!res.success) throw new Error(res.error);
-
-    showStatus(`✅ Sheet created! Opening it now…`, 'success');
-    chrome.tabs.create({ url: res.url });
-    setTimeout(() => showView('ready'), 1500);
-  } catch (err) {
-    btn.disabled = false;
-    btn.innerHTML = `<span class="setup-opt__icon">✨</span><div><strong>Create New Sheet</strong><p>Generate a beautifully formatted tracker in your Drive</p></div>`;
-    showStatus(`Error: ${err.message || err}`, 'error');
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('info-modal')?.style.display === 'flex') {
+    closeInfoModal();
   }
-});
-
-// ── Connect Existing Sheet ────────────────────────────────────
-$('connect-sheet-btn')?.addEventListener('click', async () => {
-  const inputEl = $('sheet-id-input');
-  let sheetId = (inputEl?.value || '').trim();
-
-  // Accept full URL or just the ID
-  const urlMatch = sheetId.match(/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-  if (urlMatch) sheetId = urlMatch[1];
-
-  if (!sheetId) {
-    showStatus('Please paste a Sheet ID or URL.', 'error');
-    return;
-  }
-
-  const btn = $('connect-sheet-btn');
-  btn.disabled = true;
-  btn.textContent = 'Connecting…';
-  showStatus('Verifying access to your spreadsheet…', 'loading');
-
-  try {
-    const res = await msg('CONNECT_SHEET', { spreadsheetId: sheetId });
-    if (!res.success) throw new Error(res.error);
-    showStatus('✅ Sheet connected!', 'success');
-    setTimeout(() => showView('ready'), 1200);
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = 'Connect Sheet';
-    showStatus(`Error: ${err.message || err}`, 'error');
-  }
-});
-
-// ── Open Sheet ────────────────────────────────────────────────
-$('open-sheet-btn')?.addEventListener('click', () => {
-  msg('OPEN_SHEET');
-});
-
-// ── Change Sheet ──────────────────────────────────────────────
-$('change-sheet-btn')?.addEventListener('click', async () => {
-  await chrome.storage.local.remove('spreadsheetId');
-  hideStatus();
-  const inputEl = $('sheet-id-input');
-  if (inputEl) inputEl.value = '';
-  const btn = $('create-sheet-btn');
-  if (btn) {
-    btn.disabled = false;
-    btn.innerHTML = `<span class="setup-opt__icon">✨</span><div><strong>Create New Sheet</strong><p>Generate a beautifully formatted tracker in your Drive</p></div>`;
-  }
-  showView('setup');
 });
 
 // ── Boot ──────────────────────────────────────────────────────
-init();
+initTheme();
+loadStats();

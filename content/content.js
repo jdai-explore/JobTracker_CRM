@@ -14,9 +14,8 @@
   // ── State ────────────────────────────────────────────────────
   const state = {
     currentJobId: null,
-    savedJobs: new Map(),     // jobId → { rowNumber, dateAdded, status }
+    savedJobs: new Map(),     // jobId → { dateAdded, status }
     notesPending: null,
-    isSetupDone: false,
   };
 
   // ── Selectors (ordered by specificity / reliability) ────────
@@ -40,9 +39,16 @@
       '[data-test-company-name]',
     ],
     location: [
-      '.job-details-jobs-unified-top-card__bullet',
+      '.job-details-jobs-unified-top-card__primary-description-container .tvm__text:first-child',
+      '.job-details-jobs-unified-top-card__primary-description .tvm__text:first-child',
+      '.job-details-jobs-unified-top-card__primary-description',
+      '.job-details-jobs-unified-top-card__subtitle .tvm__text:first-child',
+      '.job-details-jobs-unified-top-card__subtitle',
+      '.jobs-unified-top-card__subtitle',
       '.jobs-unified-top-card__bullet',
-      '.jobs-unified-top-card__workplace-type',
+      '.job-details-jobs-unified-top-card__bullet',
+      '.jobs-unified-top-card__subtitle-bullet',
+      '[data-test-job-location]',
       '.topcard__flavor--bullet',
     ],
     workplace: [
@@ -75,11 +81,18 @@
       '[data-control-name="jobdetails_topcard_inapply"]',
       '[data-job-id] .jobs-apply-button',
       '.jobs-unified-top-card__content--two-pane .jobs-apply-button',
+      // Full tab view selectors (no two-pane layout)
+      '.job-view-layout .jobs-apply-button',
+      '.jobs-details__main-content .jobs-apply-button',
+      '.scaffold-layout__main .jobs-apply-button',
     ],
     saveButton: [
       'button[data-view-name*="job-save"]',
       '.jobs-save-button',
       'button.jobs-save-button',
+      // Full tab view
+      '.job-view-layout button[data-view-name*="job-save"]',
+      '.scaffold-layout__main .jobs-save-button',
     ],
     topCardContainer: [
       '.job-details-jobs-unified-top-card__container--two-pane',
@@ -87,12 +100,20 @@
       '.jobs-s-apply',
       '.jobs-unified-top-card__content',
       '.jobs-details__main-content .jobs-unified-top-card',
+      // Full tab view
+      '.job-view-layout .jobs-unified-top-card',
+      '.scaffold-layout__main .jobs-unified-top-card',
+      '.job-details-jobs-unified-top-card',
     ],
     actionButtonsArea: [
       '.jobs-s-apply',
       '.jobs-apply-button-container',
       '.job-details-jobs-unified-top-card__primary-description-container',
       '.jobs-unified-top-card__content--two-pane .mt4',
+      // Full tab view
+      '.job-view-layout .jobs-apply-button-container',
+      '.job-view-layout .jobs-s-apply',
+      '.job-details-jobs-unified-top-card__actions',
     ],
   };
 
@@ -133,18 +154,81 @@
     const managerEl    = $first(SEL.hiringManager);
     const managerLinkEl= $first(SEL.hiringManagerProfile);
 
-    // Location: may contain workplace type embedded
-    let location = cleanText(locationEl);
-    let workplaceType = cleanText(workplaceEl);
-
-    // Try to separate "Location · Remote" pattern
-    if (location.includes('·')) {
-      const parts = location.split('·').map(p => p.trim());
-      location = parts[0];
-      if (!workplaceType) workplaceType = parts[1];
+    // Location extraction - handle various LinkedIn formats
+    let location = '';
+    let workplaceType = '';
+    
+    if (locationEl) {
+      const fullText = cleanText(locationEl);
+      // Try to find location pattern: "City, State" or "City, Country" or just "City"
+      // Common patterns: "San Francisco, CA", "New York, United States", "Remote"
+      
+      // Check for separator patterns first
+      const separators = ['·', '(', '—', '•'];
+      let foundSeparator = false;
+      
+      for (const sep of separators) {
+        if (fullText.includes(sep)) {
+          const parts = fullText.split(sep).map(p => p.trim()).filter(p => p);
+          if (parts.length >= 2) {
+            // First part is usually location
+            location = parts[0];
+            // Check remaining parts for workplace type
+            const remainingText = parts.slice(1).join(' ').toLowerCase();
+            if (remainingText.includes('remote') || remainingText.includes('hybrid') || remainingText.includes('on-site') || remainingText.includes('onsite')) {
+              workplaceType = parts[1].replace(/[()]/g, '').trim();
+            }
+            foundSeparator = true;
+            break;
+          }
+        }
+      }
+      
+      // If no separator found, use the whole text as location (unless it looks like workplace only)
+      if (!foundSeparator) {
+        const textLower = fullText.toLowerCase();
+        if (textLower === 'remote' || textLower === 'hybrid' || textLower === 'on-site' || textLower === 'onsite') {
+          workplaceType = fullText;
+          location = 'Not specified';
+        } else {
+          location = fullText;
+        }
+      }
     }
-
-    // Normalise workplace type
+    
+    // Fallback: Try to extract from subtitle container if location is still empty
+    // LinkedIn often puts "Company · Location · Workplace" in the subtitle
+    if (!location) {
+      const subtitleContainer = document.querySelector('.job-details-jobs-unified-top-card__subtitle, .jobs-unified-top-card__subtitle');
+      if (subtitleContainer) {
+        const subtitleText = cleanText(subtitleContainer);
+        // Pattern: "Company · Location · Remote" or "Company · Location (Remote)"
+        const parts = subtitleText.split(/[·•]/).map(p => p.trim()).filter(p => p);
+        if (parts.length >= 2) {
+          // parts[0] is company, parts[1] is usually location
+          const possibleLocation = parts[1];
+          // Verify it looks like a location (contains comma or is not a workplace type)
+          const lowerLoc = possibleLocation.toLowerCase();
+          if (!['remote', 'hybrid', 'on-site', 'onsite'].includes(lowerLoc)) {
+            location = possibleLocation;
+          }
+          // Check parts[2] for workplace type if exists
+          if (parts.length >= 3) {
+            const wpLower = parts[2].toLowerCase().replace(/[()]/g, '');
+            if (wpLower.includes('remote') || wpLower.includes('hybrid') || wpLower.includes('on-site') || wpLower.includes('onsite')) {
+              workplaceType = parts[2].replace(/[()]/g, '').trim();
+            }
+          }
+        }
+      }
+    }
+    
+    // Get workplace type if not already extracted
+    if (!workplaceType && workplaceEl) {
+      workplaceType = cleanText(workplaceEl);
+    }
+    
+    // Normalize workplace type
     const wpLower = workplaceType.toLowerCase();
     if (wpLower.includes('remote')) workplaceType = 'Remote';
     else if (wpLower.includes('hybrid')) workplaceType = 'Hybrid';
@@ -164,6 +248,9 @@
     const hiringManager = cleanText(managerEl);
     const managerProfileUrl = managerLinkEl?.href || '';
 
+    // Debug logging
+    console.log('[JobTracker] Scraped:', { title, company, location, workplaceType });
+
     return {
       title,
       company,
@@ -180,14 +267,41 @@
   function findInjectionPoint() {
     // Prefer inserting next to apply button
     const applyBtn = $first(SEL.applyButton);
-    if (applyBtn) return { anchor: applyBtn, position: 'afterend' };
+    if (applyBtn) {
+      console.log('[JobTracker] Found injection point: apply button');
+      return { anchor: applyBtn, position: 'afterend' };
+    }
 
     const saveBtn = $first(SEL.saveButton);
-    if (saveBtn) return { anchor: saveBtn, position: 'afterend' };
+    if (saveBtn) {
+      console.log('[JobTracker] Found injection point: save button');
+      return { anchor: saveBtn, position: 'afterend' };
+    }
 
     const actionArea = $first(SEL.actionButtonsArea);
-    if (actionArea) return { anchor: actionArea, position: 'beforeend' };
+    if (actionArea) {
+      console.log('[JobTracker] Found injection point: action area');
+      return { anchor: actionArea, position: 'beforeend' };
+    }
 
+    // Last resort: find any button container in the top card area
+    const topCard = document.querySelector('.job-details-jobs-unified-top-card, .jobs-unified-top-card');
+    if (topCard) {
+      // Try to find any button row
+      const buttonRow = topCard.querySelector('[class*="button"], [class*="action"], .mt4, .mt5');
+      if (buttonRow) {
+        console.log('[JobTracker] Found injection point: top card button row');
+        return { anchor: buttonRow, position: 'afterend' };
+      }
+      // Try to find the primary description container as anchor
+      const descContainer = topCard.querySelector('.job-details-jobs-unified-top-card__primary-description-container, .jobs-unified-top-card__primary-description');
+      if (descContainer) {
+        console.log('[JobTracker] Found injection point: description container');
+        return { anchor: descContainer, position: 'afterend' };
+      }
+    }
+
+    console.log('[JobTracker] No injection point found!');
     return null;
   }
 
@@ -196,14 +310,14 @@
     const wrapper = document.createElement('div');
     wrapper.id = 'jt-btn-wrapper';
     wrapper.innerHTML = `
-      <button id="jt-save-btn" class="jt-btn jt-btn--idle" title="Save to Google Sheets">
+      <button id="jt-save-btn" class="jt-btn jt-btn--idle" title="Save to JobTracker">
         <svg class="jt-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
           <polyline points="14 2 14 8 20 8"/>
           <line x1="12" y1="11" x2="12" y2="17"/>
           <line x1="9" y1="14" x2="15" y2="14"/>
         </svg>
-        <span class="jt-btn-text">Save to Sheet</span>
+        <span class="jt-btn-text">Save to Tracker</span>
         <span class="jt-btn-meta"></span>
       </button>
       <div id="jt-status-menu" class="jt-status-menu">
@@ -296,16 +410,16 @@
     const metaEl = btn.querySelector('.jt-btn-meta');
     if (metaEl && info?.dateAdded) metaEl.textContent = info.dateAdded;
     btn.querySelector('.jt-btn-text').textContent = 'Saved';
-    btn.title = info?.dateAdded ? `Saved on ${info.dateAdded} · Row ${info.rowNumber}` : 'Already saved';
+    btn.title = info?.dateAdded ? `Saved on ${info.dateAdded}` : 'Already saved';
   }
 
   function setIdleState(btn) {
     if (!btn) return;
     btn.classList.remove('jt-btn--saved', 'jt-btn--loading', 'jt-btn--error');
     btn.classList.add('jt-btn--idle');
-    btn.querySelector('.jt-btn-text').textContent = 'Save to Sheet';
+    btn.querySelector('.jt-btn-text').textContent = 'Save to Tracker';
     btn.querySelector('.jt-btn-meta').textContent = '';
-    btn.title = 'Save to Google Sheets';
+    btn.title = 'Save to JobTracker';
   }
 
   function setLoadingState(btn) {
@@ -341,28 +455,24 @@
       // Cache result
       const jobId = getCurrentJobId() || getCleanJobUrl();
       state.savedJobs.set(jobId, {
-        rowNumber: response.rowNumber,
-        dateAdded: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        dateAdded: response.job?.dateAdded || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
         status,
       });
 
       setSavedState(btn, state.savedJobs.get(jobId));
 
+      const actionText = response.isUpdate ? 'Updated' : 'Saved';
+      const totalText = response.totalJobs ? ` (${response.totalJobs} total)` : '';
       showToast(
-        `${jobData.title} at ${jobData.company} → Row ${response.rowNumber}`,
+        `${actionText}: ${jobData.title} at ${jobData.company}${totalText}`,
         'success',
-        5000,
-        { label: 'Open Sheet ↗', fn: () => chrome.runtime.sendMessage({ type: 'OPEN_SHEET' }) }
+        4000
       );
 
     } catch (err) {
       setIdleState(btn);
       const msg = err.message || String(err);
-      if (msg.includes('No spreadsheet')) {
-        showToast('Setup needed: click the JobTracker extension icon to connect your sheet.', 'warning', 6000);
-      } else {
-        showToast(`Save failed: ${msg}`, 'error', 6000);
-      }
+      showToast(`Save failed: ${msg}`, 'error', 6000);
     }
   }
 
@@ -456,15 +566,27 @@
     clearTimeout(injectDebounce);
     injectDebounce = setTimeout(async () => {
       const jobId = getCurrentJobId();
-      if (!jobId) return;
+      console.log('[JobTracker] onNavigate called, jobId:', jobId, 'url:', location.href);
 
-      if (jobId === state.currentJobId) return;
+      if (!jobId) {
+        console.log('[JobTracker] No job ID found, skipping injection');
+        return;
+      }
+
+      if (jobId === state.currentJobId) {
+        console.log('[JobTracker] Same job ID, skipping');
+        return;
+      }
       state.currentJobId = jobId;
 
       // Wait for LinkedIn's content to render
-      await waitForElement(SEL.applyButton.concat(SEL.saveButton), 5000);
+      const foundElement = await waitForElement(SEL.applyButton.concat(SEL.saveButton), 5000);
+      console.log('[JobTracker] Wait for element result:', foundElement?.tagName, foundElement?.className);
 
-      if (injectButton()) {
+      const injected = injectButton();
+      console.log('[JobTracker] Injection result:', injected);
+
+      if (injected) {
         checkSavedStatus();
       }
     }, 600);
@@ -509,11 +631,50 @@
   contentObserver.observe(document.body, { subtree: true, childList: true });
 
   // ── Boot ─────────────────────────────────────────────────────
-  (async () => {
-    // Small delay for LinkedIn's initial render
-    await new Promise(r => setTimeout(r, 1200));
-    onNavigate();
-  })();
+  function boot() {
+    const url = location.href;
+    console.log('[JobTracker] === BOOT START ===');
+    console.log('[JobTracker] URL:', url);
 
-  console.log('[JobTracker] Content script active on LinkedIn. Built by Jayadev 🚀');
+    // Check if this is a direct job view URL (full tab)
+    const isDirectJobView = url.includes('/jobs/view/');
+    console.log('[JobTracker] isDirectJobView:', isDirectJobView);
+    
+    // Initial delay for LinkedIn's render
+    const initialDelay = isDirectJobView ? 3000 : 1500;
+    console.log('[JobTracker] Starting timer:', initialDelay, 'ms');
+    
+    setTimeout(function() {
+      console.log('[JobTracker] === DELAY COMPLETE ===');
+      console.log('[JobTracker] Calling onNavigate...');
+      onNavigate();
+      
+      // Set up retries for full tab views
+      if (isDirectJobView) {
+        console.log('[JobTracker] Setting up full tab retries...');
+        [3000, 6000, 9000].forEach(function(delay) {
+          setTimeout(function() {
+            try {
+              const hasBtn = document.getElementById('jt-save-btn');
+              const hasApply = $first(SEL.applyButton);
+              const hasSave = $first(SEL.saveButton);
+              console.log('[JobTracker] Retry (' + delay + 'ms): hasBtn=' + !!hasBtn + ', hasApply=' + !!hasApply + ', hasSave=' + !!hasSave);
+              
+              if (!hasBtn && (hasApply || hasSave)) {
+                console.log('[JobTracker] Retrying injection...');
+                state.currentJobId = null;
+                onNavigate();
+              }
+            } catch (e) {
+              console.error('[JobTracker] Retry error:', e);
+            }
+          }, delay);
+        });
+      }
+    }, initialDelay);
+  }
+
+  // Start boot sequence
+  boot();
+  console.log('[JobTracker] Content script loaded. Built by Jayadev');
 })();
