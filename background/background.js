@@ -91,7 +91,7 @@ async function exportToCSV() {
   
   const headers = [
     'Date Added', 'Status', 'Job Title', 'Company', 'Location',
-    'Workplace Type', 'Salary Range', 'Job URL',
+    'Workplace Type', 'Job URL',
     'Hiring Manager', 'Manager Profile URL', 'Notes', 'Date Applied',
     'Interview Date', 'Offer', 'Follow-Up Notes'
   ];
@@ -103,7 +103,6 @@ async function exportToCSV() {
     job.company,
     job.location,
     job.workplaceType,
-    job.salary,
     job.url,
     job.hiringManager,
     job.managerProfileUrl,

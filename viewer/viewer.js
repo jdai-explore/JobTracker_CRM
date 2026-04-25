@@ -79,7 +79,6 @@ function renderJobItem(job) {
   const title = job.title || 'Untitled Job';
   const company = job.company || 'Unknown Company';
   const location = job.location || '-';
-  const salary = job.salary || '-';
   const notes = job.notes || '';
   const status = job.status || '🔖 Saved';
   
@@ -92,7 +91,6 @@ function renderJobItem(job) {
       </td>
       <td class="job-company">${escapeHtml(company)}</td>
       <td class="job-location">${escapeHtml(location)}</td>
-      <td class="job-salary">${escapeHtml(salary)}</td>
       <td class="job-notes">${escapeHtml(truncate(notes, 30))}</td>
       <td>
         <button class="btn--icon" title="Edit" data-action="edit">

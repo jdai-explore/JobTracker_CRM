@@ -423,9 +423,16 @@
   }
 
   function findInjectionPoint() {
-    // ── Priority 1: AFTER LinkedIn's native Save button ──────────
-    // Use findFlexSibling so we insert at the flex-row child level,
-    // not inside the Save button's own wrapper span.
+    // ── Priority 1: Append to the action area container (Safe & Stealthy) ──
+    // By appending to the end of the container, we avoid interfering with 
+    // LinkedIn's index-based DOM logic for its primary buttons.
+    const actionArea = $first(SEL.actionButtonsArea);
+    if (actionArea) {
+      console.log('[JobTracker] Injection: beforeend action area');
+      return { anchor: actionArea, position: 'beforeend' };
+    }
+
+    // ── Priority 2: AFTER LinkedIn's native Save button (Fallback) ───────
     const saveBtn = $first(SEL.saveButton);
     if (saveBtn) {
       const anchor = findFlexSibling(saveBtn);
@@ -433,20 +440,12 @@
       return { anchor, position: 'afterend' };
     }
 
-    // ── Priority 2: AFTER Apply button ───────────────────────────
-    // Reached when there's no native Save button (external apply jobs).
+    // ── Priority 3: AFTER Apply button ───────────────────────────
     const applyBtn = $first(SEL.applyButton);
     if (applyBtn) {
       const anchor = findFlexSibling(applyBtn);
       console.log('[JobTracker] Injection: afterend Apply flex-sibling', anchor?.tagName);
       return { anchor, position: 'afterend' };
-    }
-
-    // ── Priority 3: append inside the action area container ──────
-    const actionArea = $first(SEL.actionButtonsArea);
-    if (actionArea) {
-      console.log('[JobTracker] Injection: beforeend action area');
-      return { anchor: actionArea, position: 'beforeend' };
     }
 
     // ── Last resort: top card ─────────────────────────────────────
@@ -456,11 +455,6 @@
       if (buttonRow) {
         console.log('[JobTracker] Injection: beforeend top card button row');
         return { anchor: buttonRow, position: 'beforeend' };
-      }
-      const descContainer = topCard.querySelector('.job-details-jobs-unified-top-card__primary-description-container, .jobs-unified-top-card__primary-description');
-      if (descContainer) {
-        console.log('[JobTracker] Injection: afterend description container');
-        return { anchor: descContainer, position: 'afterend' };
       }
     }
 
@@ -472,8 +466,14 @@
   function createSaveButton() {
     const wrapper = document.createElement('div');
     wrapper.id = 'jt-btn-wrapper';
+    // Add a marker to help LinkedIn's tracking scripts ignore this branch if possible
+    wrapper.setAttribute('data-jt-ignore', 'true');
+    
+    // Using a <div> with role="button" instead of a <button> tag.
+    // Removed LinkedIn-like attributes (data-control-name) to avoid triggering 
+    // their internal tracking/rule engine logic.
     wrapper.innerHTML = `
-      <button id="jt-save-btn" class="jt-btn jt-btn--idle" title="Save to JobTracker">
+      <div id="jt-save-btn" class="jt-btn jt-btn--idle" title="Save to JobTracker" role="button" tabindex="0" data-jt-custom="true">
         <svg class="jt-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
           <polyline points="14 2 14 8 20 8"/>
@@ -482,7 +482,7 @@
         </svg>
         <span class="jt-btn-text">Save to Tracker</span>
         <span class="jt-btn-meta"></span>
-      </button>
+      </div>
       <div id="jt-status-menu" class="jt-status-menu">
         <div class="jt-status-menu__header">Save as…</div>
         <button class="jt-status-opt" data-status="🔖 Saved">🔖 Save for Later</button>
@@ -670,6 +670,14 @@
       saveJob('🔖 Saved');
     });
 
+    // Keyboard support (Enter/Space)
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        btn.click();
+      }
+    });
+
     // Right-click or long-press → open menu
     btn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -783,34 +791,35 @@
           clearInterval(interval);
           resolve(el);
         }
-      }, 200);
+      }, 1000); // 1s interval is much lighter on the CPU/engine
     });
   }
 
-  // Watch URL changes (LinkedIn is a SPA)
+  // ── Unified Observer ──────────────────────────────────────────
   let lastUrl = location.href;
-  const urlObserver = new MutationObserver(() => {
+  let isBooting = false;
+
+  const observer = new MutationObserver(() => {
+    if (isBooting) return;
+
+    // 1. URL Change detection
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       onNavigate();
+      return;
     }
-  });
-  urlObserver.observe(document.body, { subtree: true, childList: true });
 
-  // Also watch for job panel content changes
-  const contentObserver = new MutationObserver((mutations) => {
-    for (const m of mutations) {
-      if (m.addedNodes.length) {
-        const hasApplyBtn = $first(SEL.applyButton.concat(SEL.saveButton));
-        const hasOurBtn   = document.getElementById('jt-save-btn');
-        if (hasApplyBtn && !hasOurBtn) {
-          onNavigate();
-          break;
-        }
-      }
+    // 2. Passive content check
+    const hasApplyBtn = $first(SEL.applyButton.concat(SEL.saveButton));
+    if (hasApplyBtn && !document.getElementById('jt-save-btn')) {
+      onNavigate();
     }
   });
-  contentObserver.observe(document.body, { subtree: true, childList: true });
+
+  // Start observing only after a short delay to let LinkedIn's initial scripts settle
+  setTimeout(() => {
+    observer.observe(document.body, { subtree: true, childList: true });
+  }, 2000);
 
   // ── Boot ─────────────────────────────────────────────────────
   //
@@ -831,11 +840,13 @@
       .concat(SEL.topCardContainer)
       .concat(SEL.actionButtonsArea);
 
+    isBooting = true;
     const foundEl = await waitForElement(waitSelectors, 10000);
-    console.log('[JobTracker] bootDirectView: foundEl =', foundEl?.tagName, foundEl?.className);
+    console.log('[JobTracker] bootDirectView: foundEl =', foundEl?.tagName);
 
     state.currentJobId = jobId;
     const injected = injectButton();
+    isBooting = false;
     console.log('[JobTracker] bootDirectView: injection result =', injected);
 
     if (injected) {
